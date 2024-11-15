@@ -42,13 +42,13 @@ data Expr = -- Arithmetic
           | Throw Expr | Catch Expr String Expr 
   deriving Eq          
 
-deriving instance Show Expr
+-- deriving instance Show Expr
 
 -- Here's a show instance that tries to be a little more readable than the
 -- default Haskell one; feel free to uncomment it (but then, be sure to comment
 -- out the `deriving instance` line above).
 
-{-
+
 instance Show Expr where
   showsPrec _ (Const i) = shows i
   showsPrec i (Plus m n) = showParen (i > 1) $ showsPrec 2 m . showString " + " . showsPrec 2 n
@@ -59,7 +59,7 @@ instance Show Expr where
   showsPrec i Recall    = showString "recall"
   showsPrec i (Throw m) = showParen (i > 2) $ showString "throw " . showsPrec 3 m
   showsPrec i (Catch m y n) = showParen (i > 0) $ showString "try " . showsPrec 0 m . showString " catch " . showString y . showString " -> " . showsPrec 0 n
--}  
+  
 
 -- Values are, as usual, integer and function constants
 isValue :: Expr -> Bool
@@ -108,7 +108,13 @@ subst x m (Var y)
   | otherwise = Var y
 subst x m (Lam y n) = Lam y (substUnder x m y n)
 subst x m (App n1 n2) = App (subst x m n1) (subst x m n2)
-subst x m n = undefined
+subst x m (Store n) = Store (subst x m n)
+subst x m Recall = Recall
+subst x m (Throw n) = Throw (subst x m n)
+subst x m (Catch n1 y n2)
+  | x == y    = Catch (subst x m n1) y n2  -- Don't substitute in n2 if x is the same as y
+  | otherwise = Catch (subst x m n1) y (subst x m n2)  -- Substitute normally otherwise
+
 
 {-------------------------------------------------------------------------------
 
@@ -202,7 +208,82 @@ bubble; this won't *just* be `Throw` and `Catch.
 -------------------------------------------------------------------------------}
 
 smallStep :: (Expr, Expr) -> Maybe (Expr, Expr)
-smallStep = undefined
+smallStep (Const _, _) = Nothing
+
+smallStep (Plus (Const x) (Const y), z) = 
+  Just (Const (x + y), z)
+smallStep (Plus (Throw m) _, s) = 
+  Just (Throw m, s)
+smallStep (Plus _ (Throw m), s) = 
+  Just (Throw m, s)
+smallStep (Plus (Const n) m, s) = 
+  case smallStep (m, s) of
+    Just (m', s') -> Just (Plus (Const n) m', s')
+    Nothing -> Nothing
+smallStep (Plus m n, s) = 
+  case smallStep (m, s) of
+    Just (m', s') -> Just (Plus m' n, s')
+    Nothing -> case smallStep (n, s) of
+                 Just (n', s') -> Just (Plus m n', s')  
+                 Nothing -> Nothing
+
+smallStep (Var _, _) = Nothing
+smallStep (Lam _ _, _) = Nothing
+
+smallStep (App (Lam x m) n, s) | isValue n = 
+  Just (subst x n m, s)
+
+smallStep (App (Throw m) n, s) = 
+  Just (Throw m, s)
+
+smallStep (App m (Throw n), s) = 
+  Just (Throw n, s)
+
+smallStep (App m n, s) | isValue m =
+  case smallStep (n, s) of
+    Just (n', s') -> Just (App m n', s')
+    Nothing -> Nothing
+
+smallStep (App m n, s) =
+  case smallStep (m, s) of
+    Just (m', s') -> Just (App m' n, s')
+    Nothing -> Nothing
+
+smallStep (Store (Throw (Store m)), s) = Just (Store (Throw m), m)
+
+smallStep (Store (Throw m), s) = 
+  Just (Throw m, s)
+
+smallStep (Store m, s) 
+  | isValue m = Just (m, m)
+  | otherwise = case smallStep (m, s) of
+                  Just (m', s') -> Just (Store m', s')
+                  Nothing       -> Nothing
+
+smallStep (Recall, s) = Just (s, s)
+
+smallStep (Throw m, s) | isValue m = Nothing
+smallStep (Throw m, s) =
+  case smallStep (m, s) of
+    Just (m', s') -> Just (Throw m', s')
+    Nothing -> if isValue m
+              then Nothing
+              else case m of
+                Throw n -> Just (Throw n, s)
+                _ -> Nothing
+
+-- if `m` evaluates to a thrown exception `Throw w`, then `Catch m y n` evaluates to `n[w/y]`
+smallStep (Catch (Throw w) y n, x) | isValue w = 
+  Just (subst y w n, x)
+
+smallStep (Catch w y n, x)
+  | isValue w = Just (w, x)  
+
+smallStep (Catch w y n, x) =
+  case smallStep (w, x) of
+    Just (w', x') -> Just (Catch w' y n, x')
+    Nothing -> Nothing            
+
 
 steps :: (Expr, Expr) -> [(Expr, Expr)]
 steps s = case smallStep s of
@@ -211,3 +292,4 @@ steps s = case smallStep s of
 
 prints :: Show a => [a] -> IO ()
 prints = mapM_ print
+ 
